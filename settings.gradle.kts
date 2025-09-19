@@ -69,7 +69,7 @@ include(
     ":tooling:impl",
     ":tooling:model",
     ":tooling:plugin",
-    ":tooling:plugin-config",
+  //  ":tooling:plugin-config",
     ":utilities:build-info",
     ":utilities:flashbar",
     ":utilities:framework-stubs",
