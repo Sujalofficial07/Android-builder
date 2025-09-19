@@ -1,4 +1,21 @@
-package com.sujal.builder.app
+/*
+ *  This file is part of AndroidIDE.
+ *
+ *  AndroidIDE is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  AndroidIDE is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *   along with AndroidIDE.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package com.android.builder.app
 
 import android.content.Intent
 import android.net.Uri
@@ -14,22 +31,22 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.blankj.utilcode.util.ThrowableUtils.getFullStackTrace
 import com.google.android.material.color.DynamicColors
-import com.sujal.builder.BuildConfig
-import com.sujal.builder.activities.CrashHandlerActivity
-import com.sujal.builder.activities.editor.BuilderLogcatReader
-import com.sujal.builder.app.configuration.BuilderBuildConfigProvider
-import com.sujal.builder.preferences.internal.DevOpsPreferences
-import com.sujal.builder.preferences.internal.GeneralPreferences
-import com.sujal.builder.preferences.internal.StatPreferences
-import com.sujal.builder.resources.localization.LocaleProvider
-import com.sujal.builder.stats.BuilderStats
-import com.sujal.builder.stats.StatUploadWorker
-import com.sujal.builder.syntax.colorschemes.SchemeBuilder
-import com.sujal.builder.ui.themes.BuilderTheme
-import com.sujal.builder.ui.themes.IThemeManager
-import com.sujal.builder.utils.RecyclableObjectPool
-import com.sujal.builder.utils.VMUtils
-import com.sujal.builder.utils.flashError
+import com.android.builder.BuildConfig
+import com.android.builder.activities.CrashHandlerActivity
+import com.android.builder.activities.editor.IDELogcatReader
+import com.android.builder.app.configuration.IDEBuildConfigProvider
+import com.android.builder.preferences.internal.DevOpsPreferences
+import com.android.builder.preferences.internal.GeneralPreferences
+import com.android.builder.preferences.internal.StatPreferences
+import com.android.builder.resources.localization.LocaleProvider
+import com.android.builder.stats.AndroidIDEStats
+import com.android.builder.stats.StatUploadWorker
+import com.android.builder.syntax.colorschemes.SchemeAndroidIDE
+import com.android.builder.ui.themes.IDETheme
+import com.android.builder.ui.themes.IThemeManager
+import com.android.builder.utils.RecyclableObjectPool
+import com.android.builder.utils.VMUtils
+import com.android.builder.utils.flashError
 import com.termux.app.TermuxApplication
 import com.termux.shared.reflection.ReflectionUtils
 import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
@@ -44,10 +61,10 @@ import java.lang.Thread.UncaughtExceptionHandler
 import java.time.Duration
 import kotlin.system.exitProcess
 
-class BuilderApplication : TermuxApplication() {
+class IDEApplication : TermuxApplication() {
 
     private var uncaughtExceptionHandler: UncaughtExceptionHandler? = null
-    private var logcatReader: BuilderLogcatReader? = null
+    private var ideLogcatReader: IDELogcatReader? = null
 
     init {
         if (!VMUtils.isJvm()) {
@@ -73,22 +90,21 @@ class BuilderApplication : TermuxApplication() {
             }
         }
 
-        // Simplified EventBus (no index)
+        // EventBus registration
         EventBus.builder().installDefaultEventBus(true)
-
         EventBus.getDefault().register(this)
 
         AppCompatDelegate.setDefaultNightMode(GeneralPreferences.uiMode)
 
-        if (IThemeManager.getInstance().getCurrentTheme() == BuilderTheme.MATERIAL_YOU) {
+        if (IThemeManager.getInstance().getCurrentTheme() == IDETheme.MATERIAL_YOU) {
             DynamicColors.applyToActivitiesIfAvailable(this)
         }
 
-        EditorColorScheme.setDefault(SchemeBuilder.newInstance(null))
+        EditorColorScheme.setDefault(SchemeAndroidIDE.newInstance(null))
 
         ReflectionUtils.bypassHiddenAPIReflectionRestrictions()
         GlobalScope.launch {
-            // Init color scheme provider, etc.
+            // Init color scheme provider etc.
         }
     }
 
@@ -119,7 +135,7 @@ class BuilderApplication : TermuxApplication() {
             .build()
 
         val request = PeriodicWorkRequestBuilder<StatUploadWorker>(Duration.ofHours(24))
-            .setInputData(BuilderStats.statData.toInputData())
+            .setInputData(AndroidIDEStats.statData.toInputData())
             .setConstraints(constraints)
             .addTag(StatUploadWorker.WORKER_WORK_NAME)
             .build()
@@ -160,22 +176,22 @@ class BuilderApplication : TermuxApplication() {
     }
 
     private fun startLogcatReader() {
-        if (logcatReader != null) return
+        if (ideLogcatReader != null) return
         log.info("Starting logcat reader...")
-        logcatReader = BuilderLogcatReader().also { it.start() }
+        ideLogcatReader = IDELogcatReader().also { it.start() }
     }
 
     private fun stopLogcatReader() {
         log.info("Stopping logcat reader...")
-        logcatReader?.stop()
-        logcatReader = null
+        ideLogcatReader?.stop()
+        ideLogcatReader = null
     }
 
     companion object {
-        private val log = LoggerFactory.getLogger(BuilderApplication::class.java)
+        private val log = LoggerFactory.getLogger(IDEApplication::class.java)
 
         @JvmStatic
-        lateinit var instance: BuilderApplication
+        lateinit var instance: IDEApplication
             private set
     }
 }
