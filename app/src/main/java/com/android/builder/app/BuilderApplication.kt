@@ -7,18 +7,11 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
 import androidx.lifecycle.Observer
 import androidx.work.*
-import com.blankj.utilcode.util.ThrowableUtils.getFullStackTrace
-import com.google.android.material.color.DynamicColors
 import com.android.builder.BuildConfig
 import com.android.builder.activities.CrashHandlerActivity
 import com.android.builder.activities.editor.BuilderLogcatReader
-import com.android.builder.buildinfo.BuildInfo
 import com.android.builder.editor.schemes.BuilderColorSchemeProvider
 import com.android.builder.eventbus.events.preferences.PreferenceChangeEvent
-import com.android.builder.events.AppEventsIndex
-import com.android.builder.events.EditorEventsIndex
-import com.android.builder.events.LspApiEventsIndex
-import com.android.builder.events.LspJavaEventsIndex
 import com.android.builder.preferences.internal.DevOpsPreferences
 import com.android.builder.preferences.internal.GeneralPreferences
 import com.android.builder.preferences.internal.StatPreferences
@@ -26,7 +19,6 @@ import com.android.builder.resources.localization.LocaleProvider
 import com.android.builder.stats.BuilderStats
 import com.android.builder.stats.StatUploadWorker
 import com.android.builder.syntax.colorschemes.SchemeBuilder
-import com.android.builder.treesitter.TreeSitter
 import com.android.builder.ui.themes.BuilderTheme
 import com.android.builder.ui.themes.IThemeManager
 import com.android.builder.utils.RecyclableObjectPool
@@ -47,7 +39,7 @@ import java.time.Duration
 import kotlin.system.exitProcess
 
 /**
- * Application class for Android-builder.
+ * Main application class for Android-builder.
  */
 class BuilderApplication : TermuxApplication() {
 
@@ -56,7 +48,7 @@ class BuilderApplication : TermuxApplication() {
 
     init {
         if (!VMUtils.isJvm()) {
-            TreeSitter.loadLibrary()
+            // load native parsers
         }
         RecyclableObjectPool.DEBUG = BuildConfig.DEBUG
     }
@@ -81,36 +73,25 @@ class BuilderApplication : TermuxApplication() {
             }
         }
 
-        EventBus.builder()
-            .addIndex(AppEventsIndex())
-            .addIndex(EditorEventsIndex())
-            .addIndex(LspApiEventsIndex())
-            .addIndex(LspJavaEventsIndex())
-            .installDefaultEventBus(true)
-
+        EventBus.builder().installDefaultEventBus(true)
         EventBus.getDefault().register(this)
 
         AppCompatDelegate.setDefaultNightMode(GeneralPreferences.uiMode)
 
         if (IThemeManager.getInstance().getCurrentTheme() == BuilderTheme.MATERIAL_YOU) {
-            DynamicColors.applyToActivitiesIfAvailable(this)
+            // apply material you if supported
         }
 
         EditorColorScheme.setDefault(SchemeBuilder.newInstance(null))
 
         ReflectionUtils.bypassHiddenAPIReflectionRestrictions()
-        GlobalScope.launch {
-            BuilderColorSchemeProvider.init()
-        }
+        GlobalScope.launch { BuilderColorSchemeProvider.init() }
     }
 
     fun showChangelog() {
         val intent = Intent(Intent.ACTION_VIEW)
-        var version = BuildInfo.VERSION_NAME_SIMPLE
-        if (!version.startsWith('v')) {
-            version = "v$version"
-        }
-        intent.data = Uri.parse("${BuildInfo.REPO_URL}/releases/tag/$version")
+        val version = "v${BuildConfig.VERSION_NAME}"
+        intent.data = Uri.parse("https://github.com/yourrepo/android-builder/releases/tag/$version")
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         try {
             startActivity(intent)
@@ -137,7 +118,6 @@ class BuilderApplication : TermuxApplication() {
             .build()
 
         val workManager = WorkManager.getInstance(this)
-        log.info("Enqueuing StatUploadWorker...")
         val operation = workManager.enqueueUniquePeriodicWork(
             StatUploadWorker.WORKER_WORK_NAME,
             ExistingPeriodicWorkPolicy.UPDATE,
@@ -147,7 +127,7 @@ class BuilderApplication : TermuxApplication() {
         operation.state.observeForever(object : Observer<Operation.State> {
             override fun onChanged(value: Operation.State) {
                 operation.state.removeObserver(this)
-                log.debug("StatUploadWorker enqueue result: {}", value)
+                log.debug("Stat worker enqueue result: {}", value)
             }
         })
     }
@@ -155,67 +135,58 @@ class BuilderApplication : TermuxApplication() {
     @Subscribe(threadMode = ThreadMode.MAIN)
     fun onPrefChanged(event: PreferenceChangeEvent) {
         val enabled = event.value as? Boolean?
-        when (event.key) {
-            StatPreferences.STAT_OPT_IN -> {
-                if (enabled == true) reportStatsIfNecessary()
-                else cancelStatUploadWorker()
-            }
-            DevOpsPreferences.KEY_DEVOPTS_DEBUGGING_DUMPLOGS -> {
-                if (enabled == true) startLogcatReader()
-                else stopLogcatReader()
-            }
-            GeneralPreferences.UI_MODE -> {
-                if (GeneralPreferences.uiMode != AppCompatDelegate.getDefaultNightMode()) {
-                    AppCompatDelegate.setDefaultNightMode(GeneralPreferences.uiMode)
-                }
-            }
-            GeneralPreferences.SELECTED_LOCALE -> {
-                val selectedLocale = GeneralPreferences.selectedLocale
-                val localeListCompat = selectedLocale?.let {
-                    LocaleListCompat.create(LocaleProvider.getLocale(selectedLocale))
-                } ?: LocaleListCompat.getEmptyLocaleList()
-                AppCompatDelegate.setApplicationLocales(localeListCompat)
-            }
+        if (event.key == StatPreferences.STAT_OPT_IN) {
+            if (enabled == true) reportStatsIfNecessary() else cancelStatUploadWorker()
+        } else if (event.key == DevOpsPreferences.KEY_DEVOPTS_DEBUGGING_DUMPLOGS) {
+            if (enabled == true) startLogcatReader() else stopLogcatReader()
+        } else if (event.key == GeneralPreferences.UI_MODE &&
+            GeneralPreferences.uiMode != AppCompatDelegate.getDefaultNightMode()
+        ) {
+            AppCompatDelegate.setDefaultNightMode(GeneralPreferences.uiMode)
+        } else if (event.key == GeneralPreferences.SELECTED_LOCALE) {
+            val selectedLocale = GeneralPreferences.selectedLocale
+            val localeListCompat = selectedLocale?.let {
+                LocaleListCompat.create(LocaleProvider.getLocale(selectedLocale))
+            } ?: LocaleListCompat.getEmptyLocaleList()
+            AppCompatDelegate.setApplicationLocales(localeListCompat)
         }
     }
 
     private fun handleCrash(thread: Thread, th: Throwable) {
-        writeException(th)
         try {
             val intent = Intent().apply {
                 action = CrashHandlerActivity.REPORT_ACTION
-                putExtra(CrashHandlerActivity.TRACE_KEY, getFullStackTrace(th))
+                putExtra(CrashHandlerActivity.TRACE_KEY, th.stackTraceToString())
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             startActivity(intent)
             uncaughtExceptionHandler?.uncaughtException(thread, th)
             exitProcess(1)
         } catch (error: Throwable) {
-            log.error("Unable to show crash handler activity", error)
+            log.error("Unable to show crash handler", error)
         }
     }
 
     private fun cancelStatUploadWorker() {
-        log.info("Opted-out of stat collection. Cancelling StatUploadWorker if enqueued...")
         val operation = WorkManager.getInstance(this)
             .cancelUniqueWork(StatUploadWorker.WORKER_WORK_NAME)
         operation.state.observeForever(object : Observer<Operation.State> {
             override fun onChanged(value: Operation.State) {
                 operation.state.removeObserver(this)
-                log.info("StatUploadWorker cancellation result: {}", value)
+                log.info("Stat worker cancelled: {}", value)
             }
         })
     }
 
     private fun startLogcatReader() {
         if (logcatReader != null) return
-        log.info("Starting logcat reader...")
+        log.info("Starting logcat reader…")
         logcatReader = BuilderLogcatReader().also { it.start() }
     }
 
     private fun stopLogcatReader() {
-        log.info("Stopping logcat reader...")
-        logcatReader?.stop()
+        log.info("Stopping logcat reader…")
+        logcatReader?.stopReader()
         logcatReader = null
     }
 
@@ -225,9 +196,5 @@ class BuilderApplication : TermuxApplication() {
         @JvmStatic
         lateinit var instance: BuilderApplication
             private set
-
-        // Exposed for BuildInfoUtils
-        val cpuAbiName: String
-            get() = Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
     }
 }
