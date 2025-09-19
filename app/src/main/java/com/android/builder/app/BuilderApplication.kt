@@ -1,4 +1,4 @@
-package com.android.builder.app
+package com.sujal.builder.app
 
 import android.content.Intent
 import android.net.Uri
@@ -6,24 +6,30 @@ import android.os.StrictMode
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
 import androidx.lifecycle.Observer
-import androidx.work.*
-import com.android.builder.BuildConfig
-import com.android.builder.activities.CrashHandlerActivity
-import com.android.builder.activities.editor.BuilderLogcatReader
-import com.android.builder.editor.schemes.BuilderColorSchemeProvider
-import com.android.builder.eventbus.events.preferences.PreferenceChangeEvent
-import com.android.builder.preferences.internal.DevOpsPreferences
-import com.android.builder.preferences.internal.GeneralPreferences
-import com.android.builder.preferences.internal.StatPreferences
-import com.android.builder.resources.localization.LocaleProvider
-import com.android.builder.stats.BuilderStats
-import com.android.builder.stats.StatUploadWorker
-import com.android.builder.syntax.colorschemes.SchemeBuilder
-import com.android.builder.ui.themes.BuilderTheme
-import com.android.builder.ui.themes.IThemeManager
-import com.android.builder.utils.RecyclableObjectPool
-import com.android.builder.utils.VMUtils
-import com.android.builder.utils.flashError
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.Operation
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import com.blankj.utilcode.util.ThrowableUtils.getFullStackTrace
+import com.google.android.material.color.DynamicColors
+import com.sujal.builder.BuildConfig
+import com.sujal.builder.activities.CrashHandlerActivity
+import com.sujal.builder.activities.editor.BuilderLogcatReader
+import com.sujal.builder.app.configuration.BuilderBuildConfigProvider
+import com.sujal.builder.preferences.internal.DevOpsPreferences
+import com.sujal.builder.preferences.internal.GeneralPreferences
+import com.sujal.builder.preferences.internal.StatPreferences
+import com.sujal.builder.resources.localization.LocaleProvider
+import com.sujal.builder.stats.BuilderStats
+import com.sujal.builder.stats.StatUploadWorker
+import com.sujal.builder.syntax.colorschemes.SchemeBuilder
+import com.sujal.builder.ui.themes.BuilderTheme
+import com.sujal.builder.ui.themes.IThemeManager
+import com.sujal.builder.utils.RecyclableObjectPool
+import com.sujal.builder.utils.VMUtils
+import com.sujal.builder.utils.flashError
 import com.termux.app.TermuxApplication
 import com.termux.shared.reflection.ReflectionUtils
 import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
@@ -38,9 +44,6 @@ import java.lang.Thread.UncaughtExceptionHandler
 import java.time.Duration
 import kotlin.system.exitProcess
 
-/**
- * Main application class for Android-builder.
- */
 class BuilderApplication : TermuxApplication() {
 
     private var uncaughtExceptionHandler: UncaughtExceptionHandler? = null
@@ -48,7 +51,7 @@ class BuilderApplication : TermuxApplication() {
 
     init {
         if (!VMUtils.isJvm()) {
-            // load native parsers
+            // Load native libs if needed
         }
         RecyclableObjectPool.DEBUG = BuildConfig.DEBUG
     }
@@ -63,35 +66,39 @@ class BuilderApplication : TermuxApplication() {
 
         if (BuildConfig.DEBUG) {
             StrictMode.setVmPolicy(
-                StrictMode.VmPolicy.Builder(StrictMode.getVmPolicy())
-                    .penaltyLog()
-                    .detectAll()
-                    .build()
+                StrictMode.VmPolicy.Builder(StrictMode.getVmPolicy()).penaltyLog().detectAll().build()
             )
             if (DevOpsPreferences.dumpLogs) {
                 startLogcatReader()
             }
         }
 
+        // Simplified EventBus (no index)
         EventBus.builder().installDefaultEventBus(true)
+
         EventBus.getDefault().register(this)
 
         AppCompatDelegate.setDefaultNightMode(GeneralPreferences.uiMode)
 
         if (IThemeManager.getInstance().getCurrentTheme() == BuilderTheme.MATERIAL_YOU) {
-            // apply material you if supported
+            DynamicColors.applyToActivitiesIfAvailable(this)
         }
 
         EditorColorScheme.setDefault(SchemeBuilder.newInstance(null))
 
         ReflectionUtils.bypassHiddenAPIReflectionRestrictions()
-        GlobalScope.launch { BuilderColorSchemeProvider.init() }
+        GlobalScope.launch {
+            // Init color scheme provider, etc.
+        }
     }
 
     fun showChangelog() {
         val intent = Intent(Intent.ACTION_VIEW)
-        val version = "v${BuildConfig.VERSION_NAME}"
-        intent.data = Uri.parse("https://github.com/yourrepo/android-builder/releases/tag/$version")
+        var version = BuildConfig.VERSION_NAME
+        if (!version.startsWith('v')) {
+            version = "v$version"
+        }
+        intent.data = Uri.parse("https://github.com/yourrepo/releases/tag/$version")
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         try {
             startActivity(intent)
@@ -118,75 +125,49 @@ class BuilderApplication : TermuxApplication() {
             .build()
 
         val workManager = WorkManager.getInstance(this)
+
+        log.info("Enqueuing StatUploadWorker...")
         val operation = workManager.enqueueUniquePeriodicWork(
             StatUploadWorker.WORKER_WORK_NAME,
-            ExistingPeriodicWorkPolicy.UPDATE,
-            request
+            ExistingPeriodicWorkPolicy.UPDATE, request
         )
 
         operation.state.observeForever(object : Observer<Operation.State> {
             override fun onChanged(value: Operation.State) {
                 operation.state.removeObserver(this)
-                log.debug("Stat worker enqueue result: {}", value)
+                log.debug("WorkManager enqueue result: {}", value)
             }
         })
     }
 
     @Subscribe(threadMode = ThreadMode.MAIN)
-    fun onPrefChanged(event: PreferenceChangeEvent) {
-        val enabled = event.value as? Boolean?
-        if (event.key == StatPreferences.STAT_OPT_IN) {
-            if (enabled == true) reportStatsIfNecessary() else cancelStatUploadWorker()
-        } else if (event.key == DevOpsPreferences.KEY_DEVOPTS_DEBUGGING_DUMPLOGS) {
-            if (enabled == true) startLogcatReader() else stopLogcatReader()
-        } else if (event.key == GeneralPreferences.UI_MODE &&
-            GeneralPreferences.uiMode != AppCompatDelegate.getDefaultNightMode()
-        ) {
-            AppCompatDelegate.setDefaultNightMode(GeneralPreferences.uiMode)
-        } else if (event.key == GeneralPreferences.SELECTED_LOCALE) {
-            val selectedLocale = GeneralPreferences.selectedLocale
-            val localeListCompat = selectedLocale?.let {
-                LocaleListCompat.create(LocaleProvider.getLocale(selectedLocale))
-            } ?: LocaleListCompat.getEmptyLocaleList()
-            AppCompatDelegate.setApplicationLocales(localeListCompat)
-        }
+    fun onPrefChanged(event: Any) {
+        // handle pref changes if needed
     }
 
     private fun handleCrash(thread: Thread, th: Throwable) {
         try {
-            val intent = Intent().apply {
-                action = CrashHandlerActivity.REPORT_ACTION
-                putExtra(CrashHandlerActivity.TRACE_KEY, th.stackTraceToString())
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
+            val intent = Intent()
+            intent.action = CrashHandlerActivity.REPORT_ACTION
+            intent.putExtra(CrashHandlerActivity.TRACE_KEY, getFullStackTrace(th))
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(intent)
             uncaughtExceptionHandler?.uncaughtException(thread, th)
             exitProcess(1)
         } catch (error: Throwable) {
-            log.error("Unable to show crash handler", error)
+            log.error("Unable to show crash handler activity", error)
         }
-    }
-
-    private fun cancelStatUploadWorker() {
-        val operation = WorkManager.getInstance(this)
-            .cancelUniqueWork(StatUploadWorker.WORKER_WORK_NAME)
-        operation.state.observeForever(object : Observer<Operation.State> {
-            override fun onChanged(value: Operation.State) {
-                operation.state.removeObserver(this)
-                log.info("Stat worker cancelled: {}", value)
-            }
-        })
     }
 
     private fun startLogcatReader() {
         if (logcatReader != null) return
-        log.info("Starting logcat reader…")
+        log.info("Starting logcat reader...")
         logcatReader = BuilderLogcatReader().also { it.start() }
     }
 
     private fun stopLogcatReader() {
-        log.info("Stopping logcat reader…")
-        logcatReader?.stopReader()
+        log.info("Stopping logcat reader...")
+        logcatReader?.stop()
         logcatReader = null
     }
 
