@@ -58,7 +58,7 @@ include(
     ":termux:shared",
     ":termux:view",
     ":testing:androidTest",
-    ":testing:benchmarks",
+  //  ":testing:benchmarks",
     ":testing:commonTest",
     ":testing:gradleToolingTest",
     ":testing:lspTest",
